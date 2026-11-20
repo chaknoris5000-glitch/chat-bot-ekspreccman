@@ -107,7 +107,7 @@ const COMMON_SUPABASE_KEY = process.env.COMMON_SUPABASE_KEY || process.env.SUPAB
 const OPENROUTER_KEY = process.env.OPENROUTER_KEY || '';
 const FIRECRAWL_KEY = process.env.FIRECRAWL_KEY || '';
 const SITE_TO_CRAWL = 'https://expressman42.ru/';
-const BUSINESS_NAME = 'Экспрессмэн';
+const BUSINESS_NAME = "Экспрессмэн";
 const CLIENT_ID = 'ekspreccman';
 const PRICE_PER_LEAD = Number(process.env.PRICE_PER_LEAD) || 25;
 const BASE_URL = 'https://expressman42.ru/';
@@ -121,6 +121,7 @@ const YOOKASSA_SECRET_KEY = process.env.YOOKASSA_SECRET_KEY || '';
 const YOOKASSA_RETURN_URL = process.env.YOOKASSA_RETURN_URL || 'https://t.me/vadim602_bot';
 
 
+// Филиалы клиента (JSON-массив в env BRANCHES), используются для кнопок выбора
 const BRANCHES = (() => {
   try {
     const raw = process.env.BRANCHES || '';
@@ -1059,6 +1060,7 @@ app.post('/telegram-webhook', async (req, res) => {
       const messageId = cb.message.message_id;
       const data = cb.data;
 
+      // Выбор филиала клиентом (кнопки в его чате)
       if (String(data).startsWith('br_')) {
         const idx = Number(String(data).slice(3));
         const addr = BRANCHES[idx];
@@ -1134,6 +1136,7 @@ app.post('/telegram-webhook', async (req, res) => {
         }
         await answerCallback(cb.id, 'Строю маршрут');
         await sendRouteTo(chatId, s.lat, s.lon, s.branch);
+        await sendTelegram(chatId, 'Записать вас в этот филиал?', [[{ text: '📅 Записаться', callback_data: 'book' }]]);
         return;
       }
 
@@ -1315,6 +1318,23 @@ app.post('/telegram-webhook', async (req, res) => {
     } else return;
 
     const isManager = String(chatId) === String(MANAGER_CHAT_ID);
+
+    // Кнопка «Аккаунт» — только владельцу бота и админу платформы
+    try {
+      const isOwnerChat = isManager || String(chatId) === '5818548555';
+      const selfUrl = process.env.RENDER_EXTERNAL_URL;
+      if (isOwnerChat && selfUrl) {
+        global.__menuSet = global.__menuSet || new Set();
+        if (!global.__menuSet.has(String(chatId))) {
+          global.__menuSet.add(String(chatId));
+          await fetch('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/setChatMenuButton', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, menu_button: { type: 'web_app', text: 'Аккаунт', web_app: { url: selfUrl + '/app' } } })
+          });
+        }
+      }
+    } catch (e) {}
 
     // Маршрут по запросу
     if (!isManager && /маршрут|как добрат|как доехать|как найти/i.test(text || '') && BRANCHES.length) {
@@ -1685,6 +1705,7 @@ app.post('/telegram-webhook', async (req, res) => {
     const asksBranch = BRANCHES.length && /адрес|филиал|где вы|где наход|как добрат|какой филиал/i.test(text || '');
 
     if (asksBranch) {
+      // В Telegram не дублируем весь список текстом — показываем кнопки
       const kb = [];
       for (let i = 0; i < BRANCHES.length; i += 2) {
         kb.push(BRANCHES.slice(i, i + 2).map((addr, j) => ({
@@ -2186,6 +2207,19 @@ async function createClientDirect(p) {
   setTimeout(async () => {
     try {
       await fetch(`https://api.telegram.org/bot${p.bot_token}/setWebhook?url=${encodeURIComponent(url + '/telegram-webhook')}`);
+      try {
+        const menu = { type: 'web_app', text: 'Аккаунт', web_app: { url: url + '/app' } };
+        if (p.owner_telegram_id) {
+          await fetch('https://api.telegram.org/bot' + p.bot_token + '/setChatMenuButton', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: Number(p.owner_telegram_id), menu_button: menu })
+          });
+        }
+        await fetch('https://api.telegram.org/bot' + p.bot_token + '/setChatMenuButton', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: 5818548555, menu_button: menu })
+        });
+      } catch (e) { console.log('menu button error:', e.message); }
       await fetch(url + '/crawl').catch(() => {});
       console.log('✅ fallback: вебхук и парсинг запущены для', p.client_id);
     } catch (e) { console.log('fallback post-create error:', e.message); }
@@ -2563,7 +2597,7 @@ async function repeatLastBooking(chatId) {
   const last = prev[0];
   const sess = await getSessionByTelegram(chatId);
   if (sess) await updateSession(sess.session_id, { branch: last.branch || sess.branch, service: last.service || null });
-  await sendTelegram(chatId, 'Повторяем: ' + (last.branch || '') + (last.service ? ', ' + last.service : '') + '.');
+  await sendTelegram(chatId, 'Повторяем: ' + (last.branch || '') + (last.service ? ', ' + last.service : '') + '.', [[{ text: '🗺 Маршрут', callback_data: 'route' }]]);
   await showSlots(chatId);
 }
 
@@ -2610,6 +2644,10 @@ async function confirmBooking(chatId, ts) {
       (service ? '\nУслуга: ' + service : '') +
       (branch ? '\nФилиал: ' + branch : '') +
       '\nКлиент: ' + chatId);
+  }
+
+  if (branch && sess && sess.lat && sess.lon) {
+    try { await sendRouteTo(chatId, sess.lat, sess.lon, branch); } catch (e) {}
   }
 }
 
